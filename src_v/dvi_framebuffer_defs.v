@@ -31,6 +31,13 @@
 
 `define CONFIG    8'h0
 
+    `define CONFIG_X2_MODE      2
+    `define CONFIG_X2_MODE_DEFAULT    0
+    `define CONFIG_X2_MODE_B          2
+    `define CONFIG_X2_MODE_T          2
+    `define CONFIG_X2_MODE_W          1
+    `define CONFIG_X2_MODE_R          2:2
+
     `define CONFIG_INT_EN_SOF      1
     `define CONFIG_INT_EN_SOF_DEFAULT    0
     `define CONFIG_INT_EN_SOF_B          1

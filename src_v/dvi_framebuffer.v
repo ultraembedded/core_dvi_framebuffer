@@ -43,6 +43,7 @@ module dvi_framebuffer
     ,parameter VIDEO_HEIGHT     = 600
     ,parameter VIDEO_REFRESH    = 72
     ,parameter VIDEO_ENABLE     = 1
+    ,parameter VIDEO_X2_MODE    = 0
     ,parameter VIDEO_FB_RAM     = 32'h3000000
 )
 //-----------------------------------------------------------------
@@ -185,6 +186,18 @@ else if (write_en_w && (wr_addr_w[7:0] == `CONFIG))
 else
     config_wr_q <= 1'b0;
 
+// config_x2_mode [internal]
+reg        config_x2_mode_q;
+
+always @ (posedge clk_i or posedge rst_i)
+if (rst_i)
+    config_x2_mode_q <= VIDEO_X2_MODE;
+else if (write_en_w && (wr_addr_w[7:0] == `CONFIG))
+    config_x2_mode_q <= cfg_wdata_i[`CONFIG_X2_MODE_R];
+
+wire        config_x2_mode_out_w = config_x2_mode_q;
+
+
 // config_int_en_sof [internal]
 reg        config_int_en_sof_q;
 
@@ -271,6 +284,7 @@ begin
 
     `CONFIG:
     begin
+        data_r[`CONFIG_X2_MODE_R] = config_x2_mode_q;
         data_r[`CONFIG_INT_EN_SOF_R] = config_int_en_sof_q;
         data_r[`CONFIG_ENABLE_R] = config_enable_q;
     end
@@ -342,36 +356,43 @@ wire status_wr_req_w = status_wr_q;
 localparam H_REZ         = VIDEO_WIDTH;
 localparam V_REZ         = VIDEO_HEIGHT;
 localparam CLK_MHZ       = (VIDEO_WIDTH == 640 && VIDEO_REFRESH == 60)  ? 25.175 :
+                           (VIDEO_WIDTH == 640 && VIDEO_REFRESH == 85)  ? 36 :
                            (VIDEO_WIDTH == 800 && VIDEO_REFRESH == 72)  ? 50.00  :
                            (VIDEO_WIDTH == 1280 && VIDEO_REFRESH == 60) ? 74.25  :
                            (VIDEO_WIDTH == 1920 && VIDEO_REFRESH == 60) ? 148.5  :
                                                                           0;
 localparam H_SYNC_START  = (VIDEO_WIDTH == 640 && VIDEO_REFRESH == 60)  ? 656 :
+                           (VIDEO_WIDTH == 640 && VIDEO_REFRESH == 85)  ? 672 :
                            (VIDEO_WIDTH == 800 && VIDEO_REFRESH == 72)  ? 856 :
                            (VIDEO_WIDTH == 1280 && VIDEO_REFRESH == 60) ? 1390:
                            (VIDEO_WIDTH == 1920 && VIDEO_REFRESH == 60) ? 2008:
                                                                           0;
 localparam H_SYNC_END    = (VIDEO_WIDTH == 640 && VIDEO_REFRESH == 60)  ? 752 :
+                           (VIDEO_WIDTH == 640 && VIDEO_REFRESH == 85)  ? 720 :
                            (VIDEO_WIDTH == 800 && VIDEO_REFRESH == 72)  ? 976 :
                            (VIDEO_WIDTH == 1280 && VIDEO_REFRESH == 60) ? 1430:
                            (VIDEO_WIDTH == 1920 && VIDEO_REFRESH == 60) ? 2052:
                                                                           0;
 localparam H_MAX         = (VIDEO_WIDTH == 640 && VIDEO_REFRESH == 60)  ? 800 :
+                           (VIDEO_WIDTH == 640 && VIDEO_REFRESH == 85)  ? 832 :
                            (VIDEO_WIDTH == 800 && VIDEO_REFRESH == 72)  ? 1040:
                            (VIDEO_WIDTH == 1280 && VIDEO_REFRESH == 60) ? 1650:
                            (VIDEO_WIDTH == 1920 && VIDEO_REFRESH == 60) ? 2200:
                                                                           0;
 localparam V_SYNC_START  = (VIDEO_HEIGHT == 480 && VIDEO_REFRESH == 60) ? 490 :
+                           (VIDEO_HEIGHT == 480 && VIDEO_REFRESH == 85) ? 490 :
                            (VIDEO_HEIGHT == 600 && VIDEO_REFRESH == 72) ? 637 :
                            (VIDEO_HEIGHT == 720 && VIDEO_REFRESH == 60) ? 725 :
                            (VIDEO_HEIGHT == 1080 && VIDEO_REFRESH == 60)? 1084 :
                                                                           0;
 localparam V_SYNC_END    = (VIDEO_HEIGHT == 480 && VIDEO_REFRESH == 60) ? 492 :
+                           (VIDEO_HEIGHT == 480 && VIDEO_REFRESH == 85) ? 492 :
                            (VIDEO_HEIGHT == 600 && VIDEO_REFRESH == 72) ? 643 :
                            (VIDEO_HEIGHT == 720 && VIDEO_REFRESH == 60) ? 730 :
                            (VIDEO_HEIGHT == 1080 && VIDEO_REFRESH == 60)? 1089:
                                                                           0;
 localparam V_MAX         = (VIDEO_HEIGHT == 480 && VIDEO_REFRESH == 60) ? 525 :
+                           (VIDEO_HEIGHT == 480 && VIDEO_REFRESH == 85) ? 525 :
                            (VIDEO_HEIGHT == 600 && VIDEO_REFRESH == 72) ? 666 :
                            (VIDEO_HEIGHT == 720 && VIDEO_REFRESH == 60) ? 750 :
                            (VIDEO_HEIGHT == 1080 && VIDEO_REFRESH == 60)? 1125:
@@ -503,30 +524,65 @@ else if (!outport_arvalid_o && fifo_space_w && active_q)
 
 assign outport_arvalid_o = arvalid_q;
 
-reg [31:0] fetch_count_q;
+// Calculate number of bytes being fetch (burst length x interface width)
+wire [31:0] fetch_bytes_w = {22'b0, (outport_arlen_o + 8'd1), 2'b0};
+
+reg [11:0] fetch_h_pos_q;
+reg [11:0] fetch_v_pos_q;
+
+localparam H_LINE_LEN_X2       = ((H_REZ / 2) - (BURST_LEN / 2));
+localparam H_LINE_LEN_X2_BYTES = H_LINE_LEN_X2 * 2;
+
+localparam H_FETCHES_LINE      = ((H_REZ * 2) / BURST_LEN);
+localparam H_FETCHES_LINE_X2   = ((H_REZ * 2) / BURST_LEN) / 2;
+
+wire last_fetch_w = config_x2_mode_out_w ? ((fetch_h_pos_q == (H_FETCHES_LINE_X2 - 1)) && (fetch_v_pos_q == (V_REZ - 1))) :
+                                           ((fetch_h_pos_q == (H_FETCHES_LINE - 1))    && (fetch_v_pos_q == (V_REZ - 1)));
 
 always @ (posedge clk_i or posedge rst_i)
 if (rst_i)
-    fetch_count_q <= 32'b0;
+    fetch_h_pos_q    <= 12'b0;
 else if (outport_arvalid_o && outport_arready_i)
 begin
-    if (fetch_count_q == (VIDEO_SIZE - BURST_LEN))
-        fetch_count_q  <= 32'b0;
+    if (config_x2_mode_out_w && fetch_h_pos_q == (H_FETCHES_LINE_X2 - 1))
+        fetch_h_pos_q    <= 12'b0;
+    else if (!config_x2_mode_out_w && fetch_h_pos_q == (H_FETCHES_LINE - 1))
+        fetch_h_pos_q  <= 12'b0;
     else
-        fetch_count_q  <= fetch_count_q + {22'b0, (outport_arlen_o + 8'd1), 2'b0};
+        fetch_h_pos_q  <= fetch_h_pos_q + 12'd1;
 end
 else if (!active_q)
-    fetch_count_q   <= 32'b0;
+    fetch_h_pos_q    <= 12'b0;
+
+always @ (posedge clk_i or posedge rst_i)
+if (rst_i)
+    fetch_v_pos_q    <= 12'b0;
+else if (outport_arvalid_o && outport_arready_i)
+begin
+    if ((config_x2_mode_out_w && fetch_h_pos_q == (H_FETCHES_LINE_X2 - 1)) ||
+       (!config_x2_mode_out_w && fetch_h_pos_q == (H_FETCHES_LINE - 1)))
+    begin
+        if (fetch_v_pos_q == (V_REZ - 1))
+            fetch_v_pos_q <= 12'b0;
+        else
+            fetch_v_pos_q <= fetch_v_pos_q + 12'd1;
+    end
+end
+else if (!active_q)
+    fetch_v_pos_q    <= 12'b0;
+
 
 always @ (posedge clk_i or posedge rst_i)
 if (rst_i)
     araddr_q <= 32'b0;
 else if (outport_arvalid_o && outport_arready_i)
 begin
-    if (fetch_count_q == (VIDEO_SIZE - BURST_LEN))
+    if (last_fetch_w)
         araddr_q  <= frame_addr_w;
+    else if (config_x2_mode_out_w && !fetch_v_pos_q[0] && fetch_h_pos_q == (H_FETCHES_LINE_X2 - 1))
+        araddr_q  <= araddr_q - H_LINE_LEN_X2_BYTES;
     else
-        araddr_q  <= araddr_q + {22'b0, (outport_arlen_o + 8'd1), 2'b0};
+        araddr_q  <= araddr_q + fetch_bytes_w;
 end
 else if (!active_q)
     araddr_q <= frame_addr_w;
@@ -534,7 +590,7 @@ else if (!active_q)
 assign outport_araddr_o  = araddr_q;
 assign outport_arburst_o = 2'b01;
 assign outport_arid_o    = 4'd0;
-assign outport_arlen_o   = 8'd7;
+assign outport_arlen_o   = (BURST_LEN / 4) - 1;
 
 assign outport_rready_o  = 1'b1;
 
@@ -558,7 +614,7 @@ reg word_sel_q;
 always @ (posedge clk_i or posedge rst_i)
 if (rst_i)
     word_sel_q  <= 1'b0;
-else if (!blanking_w)
+else if (!blanking_w && (h_pos_q[0] || !config_x2_mode_out_w))
     word_sel_q  <= ~word_sel_q;
 else if (!active_q)
     word_sel_q  <= 1'b0;
@@ -573,7 +629,7 @@ wire [7:0] red_w   = (config_enable_out_w == 1'b0) ? 8'b0 :
                        word_sel_q                   ? {pixel_data_w[15+16:11+16], 3'b0} : 
                                                       {pixel_data_w[15:11],       3'b0};
 
-assign pixel_accept_w = ~blanking_w & word_sel_q & active_q;
+assign pixel_accept_w = ~blanking_w & word_sel_q & (h_pos_q[0] || !config_x2_mode_out_w) & active_q;
 
 //-----------------------------------------------------------------
 // DVI output
@@ -603,7 +659,7 @@ reg intr_q;
 always @ (posedge clk_i or posedge rst_i)
 if (rst_i)
     intr_q <= 1'b0;
-else if (config_int_en_sof_out_w && fetch_count_q == 32'b0)
+else if (config_int_en_sof_out_w && fetch_h_pos_q == 12'b0 && fetch_v_pos_q == 12'b0)
     intr_q <= 1'b1;
 else
     intr_q <= 1'b0;
